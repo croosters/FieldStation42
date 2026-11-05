@@ -1,4 +1,5 @@
 from fastapi import APIRouter, Request, HTTPException
+import datetime
 import json
 import os
 import subprocess
@@ -7,6 +8,7 @@ import re
 import platform
 from urllib.parse import quote
 from fs42.station_manager import StationManager
+from fs42.liquid_manager import LiquidManager
 
 router = APIRouter(prefix="/player", tags=["player"])
 
@@ -191,54 +193,112 @@ async def get_player_status():
         return {"error": "Status socket is not configured."}
 
 
-@router.get("/status/current_media")
-async def get_current_media():
-    """Return the media file/stream the player is currently playing, if any.
+# Last non-guide media status seen from the player. While the guide channel is
+# on screen the player overwrites the status socket with the guide's own info,
+# so we cache the most recent real channel and serve that instead.
+_last_media_status = None
 
-    Used by the web guide channel to mirror the most recently selected channel.
-    Returns a URL the browser can load, or 404 when the player is idle/off-air.
-    """
+
+def _read_player_status():
     status_socket = StationManager().server_conf["status_socket"]
     if not status_socket:
         raise HTTPException(status_code=404, detail="Status socket is not configured.")
-
     try:
         with open(status_socket, "r") as f:
-            status = json.loads(f.read().strip())
+            return json.loads(f.read().strip())
     except FileNotFoundError:
         raise HTTPException(status_code=404, detail="Status socket file not found.")
 
-    if status.get("status") not in ("playing", "stuck"):
-        raise HTTPException(status_code=404, detail="Player is not currently playing anything.")
+
+def _is_guide_status(status):
+    """True when the status describes the guide/web channel itself."""
+    if status.get("content_type") in ("web", "guide"):
+        return True
+    guide_conf = StationManager().guide_config
+    return bool(guide_conf and status.get("network_name") == guide_conf.get("network_name"))
+
+
+DEFAULT_FALLBACK_CHANNEL = 2
+
+
+def _browser_url(file_path):
+    """Map a player file path (or stream URL) to a URL a browser can play."""
+    if file_path.startswith("http://") or file_path.startswith("https://"):
+        return file_path
+    if not os.path.exists(file_path):
+        return None
+    # The player stores paths relative to the project root when it can; only
+    # absolutize (and then relativize) when the status contains a full path.
+    if os.path.isabs(file_path):
+        try:
+            file_path = os.path.relpath(file_path, os.path.abspath("."))
+        except ValueError:
+            return None
+    return "/media/file?path=" + quote(file_path)
+
+
+def _fallback_media_payload(channel_number):
+    """Build a media payload from the schedule for the given channel - used when
+    we have no cached live status (e.g. server restarted while the guide was up)."""
+    station = StationManager().station_by_channel(channel_number)
+    if not station or not station.get("_has_schedule", False):
+        raise HTTPException(status_code=404, detail=f"No schedulable channel {channel_number} for fallback.")
+
+    try:
+        pp = LiquidManager().get_play_point(station["network_name"], datetime.datetime.now())
+    except Exception:
+        raise HTTPException(status_code=404, detail=f"No schedule available for channel {channel_number}.")
+
+    if not pp or not pp.plan:
+        raise HTTPException(status_code=404, detail=f"Channel {channel_number} has nothing scheduled now.")
+
+    entry = pp.plan[pp.index]
+    elapsed = int(pp.offset or 0) + int(entry.skip or 0)
+    url = _browser_url(entry.path)
+    if not url:
+        raise HTTPException(status_code=404, detail=f"Channel {channel_number} media not found on disk.")
+
+    return {
+        "url": url,
+        "title": pp.block_title,
+        "channel_number": channel_number,
+        "network_name": station["network_name"],
+        "elapsed": str(datetime.timedelta(seconds=elapsed)),
+        "elapsed_seconds": elapsed,
+        "fallback": True,
+    }
+
+
+@router.get("/status/current_media")
+async def get_current_media(channel: int = DEFAULT_FALLBACK_CHANNEL):
+    """Return the media the player was most recently playing, for the guide's
+    mini-player to mirror. While the guide channel itself is on screen, the
+    last non-guide channel is remembered and served instead. If nothing has
+    been cached yet, falls back to the current schedule slot on `channel`.
+    """
+    global _last_media_status
+
+    status = _read_player_status()
+
+    if status.get("status") in ("playing", "stuck") and not _is_guide_status(status):
+        _last_media_status = status
+
+    if not _last_media_status:
+        # Nothing seen yet - serve the schedule's current slot on the fallback channel.
+        return _fallback_media_payload(channel)
+
+    status = _last_media_status
 
     file_path = status.get("file_path")
     if not file_path:
         raise HTTPException(status_code=404, detail="Player has no current media file.")
 
-    # Streams (URLs) can be played directly; local files must be served.
-    if file_path.startswith("http://") or file_path.startswith("https://"):
-        return {
-            "url": file_path,
-            "title": status.get("title"),
-            "channel_number": status.get("channel_number"),
-            "network_name": status.get("network_name"),
-        }
-
-    if not os.path.exists(file_path):
+    url = _browser_url(file_path)
+    if not url:
         raise HTTPException(status_code=404, detail="Current media file not found on disk.")
 
-    # The player stores paths relative to the project root when it can; only
-    # absolutize (and then relativize) when the status contains a full path.
-    if os.path.isabs(file_path):
-        try:
-            rel = os.path.relpath(file_path, os.path.abspath("."))
-        except ValueError:
-            rel = file_path
-    else:
-        rel = file_path
-
     return {
-        "url": "/media/file?path=" + quote(rel),
+        "url": url,
         "title": status.get("title"),
         "channel_number": status.get("channel_number"),
         "network_name": status.get("network_name"),

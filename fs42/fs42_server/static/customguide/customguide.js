@@ -15,6 +15,8 @@ let RANDOM_START = params.get('random_start') === '1';
 const MIRROR_LIVE = params.get('mirror_live') !== '0';
 // how often (seconds) to check whether the player has changed channels
 const MIRROR_POLL_SECONDS = parseFloat(params.get('mirror_poll')) || 5;
+// channel used for the schedule-based fallback when the server has no live status
+const MIRROR_CHANNEL = params.get('mirror_channel');
 
 let stations = [];
 
@@ -654,7 +656,8 @@ async function loadVideoPlaylist() {
 // { url, title, channel_number, ... } or null when nothing is on air.
 async function fetchCurrentMedia() {
   try {
-    const resp = await fetch('/player/status/current_media');
+    const qs = MIRROR_CHANNEL ? '?channel=' + encodeURIComponent(MIRROR_CHANNEL) : '';
+    const resp = await fetch('/player/status/current_media' + qs);
     if (!resp.ok) return null;
     return await resp.json();
   } catch (e) {
@@ -666,9 +669,32 @@ function playMirrorURL(url, info) {
   mirrorURL = url;
   mirrorInfo = info || null;
   bgVideoPlayer.src = url;
-  bgVideoPlayer.play().catch(function (e) {
-    console.warn('video play failed:', e.message);
-  });
+
+  const startAt = info && info.elapsed_seconds;
+  const doPlay = function () {
+    // resume at the position the live player is at, if we know it
+    if (startAt && isFinite(startAt) && startAt > 0) {
+      const seekTo = function () {
+        try { bgVideoPlayer.currentTime = startAt; } catch (e) { /* not seekable yet */ }
+      };
+      if (bgVideoPlayer.readyState >= 1) {
+        seekTo();
+      } else {
+        bgVideoPlayer.addEventListener('loadedmetadata', seekTo, { once: true });
+      }
+    }
+    bgVideoPlayer.play().catch(function (e) {
+      console.warn('video play failed:', e.message);
+    });
+  };
+
+  if (bgVideoPlayer.readyState >= 1) {
+    doPlay();
+  } else {
+    bgVideoPlayer.addEventListener('loadedmetadata', doPlay, { once: true });
+    // also attempt plain play in case loadedmetadata already fired
+    bgVideoPlayer.play().catch(function () {});
+  }
 }
 
 function playVideoTrack(index) {
@@ -698,15 +724,10 @@ async function mirrorPoll() {
       mirrorInfo = info;
     }
   } else if (mirrorURL !== null) {
-    // player went idle/off-air: fall back to the preset playlist
+    // player went idle/off-air: next poll will hand back the fallback channel
+    // from the server, so there is nothing to do here
     mirrorURL = null;
     mirrorInfo = null;
-    if (videoPlaylist.length) {
-      playVideoTrack(Math.floor(Math.random() * videoPlaylist.length));
-    } else {
-      const videoPanel = document.getElementById('video-panel');
-      if (videoPanel) videoPanel.style.display = 'none';
-    }
   }
 }
 
@@ -755,15 +776,15 @@ function setupVideo() {
   });
 
   if (MIRROR_LIVE) {
-    // try the live mirror first; fall back to the playlist if nothing is on air
+    // The server always answers: live status if it has one, otherwise the
+    // current schedule slot on the fallback channel (default 2).
     mirrorPoll().then(function () {
-      if (!mirrorURL) {
-        if (videoPlaylist.length) {
-          playVideoTrack(Math.floor(Math.random() * videoPlaylist.length));
-        } else {
-          const videoPanel = document.getElementById('video-panel');
-          if (videoPanel) videoPanel.style.display = 'none';
-        }
+      if (!mirrorURL && videoPlaylist.length) {
+        // server unreachable entirely - last resort is the preset playlist
+        playVideoTrack(Math.floor(Math.random() * videoPlaylist.length));
+      } else if (!mirrorURL) {
+        const videoPanel = document.getElementById('video-panel');
+        if (videoPanel) videoPanel.style.display = 'none';
       }
       startMirrorPolling();
     });
