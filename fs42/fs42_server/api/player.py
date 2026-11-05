@@ -1,9 +1,11 @@
 from fastapi import APIRouter, Request, HTTPException
 import json
+import os
 import subprocess
 import shutil
 import re
 import platform
+from urllib.parse import quote
 from fs42.station_manager import StationManager
 
 router = APIRouter(prefix="/player", tags=["player"])
@@ -187,6 +189,61 @@ async def get_player_status():
             return {"error": "Status socket file not found."}
     else:
         return {"error": "Status socket is not configured."}
+
+
+@router.get("/status/current_media")
+async def get_current_media():
+    """Return the media file/stream the player is currently playing, if any.
+
+    Used by the web guide channel to mirror the most recently selected channel.
+    Returns a URL the browser can load, or 404 when the player is idle/off-air.
+    """
+    status_socket = StationManager().server_conf["status_socket"]
+    if not status_socket:
+        raise HTTPException(status_code=404, detail="Status socket is not configured.")
+
+    try:
+        with open(status_socket, "r") as f:
+            status = json.loads(f.read().strip())
+    except FileNotFoundError:
+        raise HTTPException(status_code=404, detail="Status socket file not found.")
+
+    if status.get("status") not in ("playing", "stuck"):
+        raise HTTPException(status_code=404, detail="Player is not currently playing anything.")
+
+    file_path = status.get("file_path")
+    if not file_path:
+        raise HTTPException(status_code=404, detail="Player has no current media file.")
+
+    # Streams (URLs) can be played directly; local files must be served.
+    if file_path.startswith("http://") or file_path.startswith("https://"):
+        return {
+            "url": file_path,
+            "title": status.get("title"),
+            "channel_number": status.get("channel_number"),
+            "network_name": status.get("network_name"),
+        }
+
+    if not os.path.exists(file_path):
+        raise HTTPException(status_code=404, detail="Current media file not found on disk.")
+
+    # The player stores paths relative to the project root when it can; only
+    # absolutize (and then relativize) when the status contains a full path.
+    if os.path.isabs(file_path):
+        try:
+            rel = os.path.relpath(file_path, os.path.abspath("."))
+        except ValueError:
+            rel = file_path
+    else:
+        rel = file_path
+
+    return {
+        "url": "/media/file?path=" + quote(rel),
+        "title": status.get("title"),
+        "channel_number": status.get("channel_number"),
+        "network_name": status.get("network_name"),
+        "elapsed": status.get("duration", "").split("/")[0] if status.get("duration") else None,
+    }
 
 
 @router.get("/status/queue_connected")

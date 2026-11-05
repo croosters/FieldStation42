@@ -11,6 +11,10 @@ const VIDEOS = params.get('videos') !== 'false';
 const MESSAGES_PATH = params.get('messages');
 const LOOP = params.get('loop') !== '0';
 let RANDOM_START = params.get('random_start') === '1';
+// mirror the live player's currently-playing channel in the video panel
+const MIRROR_LIVE = params.get('mirror_live') !== '0';
+// how often (seconds) to check whether the player has changed channels
+const MIRROR_POLL_SECONDS = parseFloat(params.get('mirror_poll')) || 5;
 
 let stations = [];
 
@@ -33,6 +37,10 @@ let bgPlayer = null;
 let videoPlaylist = [];
 let currentVideoIndex = 0;
 let bgVideoPlayer = null;
+// live mirroring state
+let mirrorTimer = null;
+let mirrorURL = null;      // what the <video> is currently pointed at
+let mirrorInfo = null;     // last successful /player/status/current_media payload
 
 // text carousel
 let messages = [];
@@ -642,24 +650,76 @@ async function loadVideoPlaylist() {
   }
 }
 
+// Ask the server what the player is currently playing. Resolves to a payload
+// { url, title, channel_number, ... } or null when nothing is on air.
+async function fetchCurrentMedia() {
+  try {
+    const resp = await fetch('/player/status/current_media');
+    if (!resp.ok) return null;
+    return await resp.json();
+  } catch (e) {
+    return null;
+  }
+}
+
+function playMirrorURL(url, info) {
+  mirrorURL = url;
+  mirrorInfo = info || null;
+  bgVideoPlayer.src = url;
+  bgVideoPlayer.play().catch(function (e) {
+    console.warn('video play failed:', e.message);
+  });
+}
+
 function playVideoTrack(index) {
   if (!bgVideoPlayer || !videoPlaylist.length) return;
   currentVideoIndex = index % videoPlaylist.length;
+  mirrorURL = null;
+  mirrorInfo = null;
   bgVideoPlayer.src = videoPlaylist[currentVideoIndex];
   bgVideoPlayer.play().catch(function (e) {
     console.warn('video play failed:', e.message);
   });
 }
 
+// Re-check what the player is doing. If it changed (channel switch, new file,
+// went off-air, came back on), swap the video panel source accordingly.
+async function mirrorPoll() {
+  if (!MIRROR_LIVE || !bgVideoPlayer) return;
+
+  const info = await fetchCurrentMedia();
+  const onAir = info && info.url;
+
+  if (onAir) {
+    if (mirrorURL !== info.url) {
+      // player switched files/channels (or came back from off-air)
+      playMirrorURL(info.url, info);
+    } else {
+      mirrorInfo = info;
+    }
+  } else if (mirrorURL !== null) {
+    // player went idle/off-air: fall back to the preset playlist
+    mirrorURL = null;
+    mirrorInfo = null;
+    if (videoPlaylist.length) {
+      playVideoTrack(Math.floor(Math.random() * videoPlaylist.length));
+    } else {
+      const videoPanel = document.getElementById('video-panel');
+      if (videoPanel) videoPanel.style.display = 'none';
+    }
+  }
+}
+
+function startMirrorPolling() {
+  if (mirrorTimer) clearInterval(mirrorTimer);
+  const interval = Math.max(1, MIRROR_POLL_SECONDS) * 1000;
+  mirrorPoll();
+  mirrorTimer = setInterval(mirrorPoll, interval);
+}
+
 function setupVideo() {
   bgVideoPlayer = document.getElementById('bgVideoPlayer');
   if (!bgVideoPlayer) return;
-
-  if (!videoPlaylist.length) {
-    const videoPanel = document.getElementById('video-panel');
-    if (videoPanel) videoPanel.style.display = 'none';
-    return;
-  }
 
   const vol = parseFloat(getCSSVar('--video-volume'));
   bgVideoPlayer.volume = isNaN(vol) ? 0.8 : vol;
@@ -668,10 +728,22 @@ function setupVideo() {
 
   bgVideoPlayer.addEventListener('ended', function () {
     consecutiveErrors = 0;
-    playVideoTrack(randomOtherIndex(videoPlaylist, currentVideoIndex));
+    if (mirrorURL) {
+      // the mirrored file reached its natural end; the player is presumably
+      // on the next file already, but poll now instead of waiting a cycle
+      mirrorPoll();
+    } else {
+      playVideoTrack(randomOtherIndex(videoPlaylist, currentVideoIndex));
+    }
   });
 
   bgVideoPlayer.addEventListener('error', function () {
+    if (mirrorURL) {
+      // mirrored source broke (file replaced, stream hiccup); retry next poll
+      mirrorURL = null;
+      setTimeout(mirrorPoll, 1000);
+      return;
+    }
     consecutiveErrors++;
     if (consecutiveErrors >= videoPlaylist.length) {
       console.warn('all video tracks failed to load, hiding video panel');
@@ -682,7 +754,27 @@ function setupVideo() {
     setTimeout(() => playVideoTrack(randomOtherIndex(videoPlaylist, currentVideoIndex)), 1000);
   });
 
-  playVideoTrack(Math.floor(Math.random() * videoPlaylist.length));
+  if (MIRROR_LIVE) {
+    // try the live mirror first; fall back to the playlist if nothing is on air
+    mirrorPoll().then(function () {
+      if (!mirrorURL) {
+        if (videoPlaylist.length) {
+          playVideoTrack(Math.floor(Math.random() * videoPlaylist.length));
+        } else {
+          const videoPanel = document.getElementById('video-panel');
+          if (videoPanel) videoPanel.style.display = 'none';
+        }
+      }
+      startMirrorPolling();
+    });
+  } else {
+    if (!videoPlaylist.length) {
+      const videoPanel = document.getElementById('video-panel');
+      if (videoPanel) videoPanel.style.display = 'none';
+      return;
+    }
+    playVideoTrack(Math.floor(Math.random() * videoPlaylist.length));
+  }
 }
 
 
