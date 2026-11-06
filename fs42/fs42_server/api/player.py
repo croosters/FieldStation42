@@ -223,18 +223,28 @@ DEFAULT_FALLBACK_CHANNEL = 2
 
 def _browser_url(file_path):
     """Map a player file path (or stream URL) to a URL a browser can play."""
+    if not file_path:
+        return None
     if file_path.startswith("http://") or file_path.startswith("https://"):
         return file_path
-    if not os.path.exists(file_path):
+
+    normalized = os.path.normpath(file_path)
+    if not os.path.exists(normalized):
         return None
+
     # The player stores paths relative to the project root when it can; only
     # absolutize (and then relativize) when the status contains a full path.
-    if os.path.isabs(file_path):
+    if os.path.isabs(normalized):
         try:
-            file_path = os.path.relpath(file_path, os.path.abspath("."))
+            from_path = os.path.abspath(".")
+            rel = os.path.relpath(normalized, from_path)
+            if rel.startswith(".."):
+                return None
+            normalized = rel
         except ValueError:
             return None
-    return "/media/file?path=" + quote(file_path)
+
+    return "/media/file?path=" + quote(normalized, safe="/")
 
 
 def _fallback_media_payload(channel_number):

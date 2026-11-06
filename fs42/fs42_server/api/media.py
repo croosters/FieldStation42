@@ -1,6 +1,7 @@
 import os
 import mimetypes
 import logging
+from urllib.parse import unquote
 from fastapi import APIRouter, HTTPException, status
 from fastapi.responses import FileResponse
 
@@ -17,10 +18,19 @@ GUIDE_VIDEOS_DIR = os.path.join(PROJECT_ROOT, 'runtime', 'guide_videos')
 
 
 def safe_resolve(relative_path):
-    clean = relative_path.lstrip('/').lstrip('\\')
-    resolved = os.path.realpath(os.path.join(PROJECT_ROOT, clean))
-    if not resolved.startswith(PROJECT_ROOT):
+    if not relative_path:
         raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="invalid path")
+
+    clean = unquote(relative_path).replace('\\', '/')
+    clean = clean.lstrip('/').lstrip('\\')
+    resolved = os.path.realpath(os.path.join(PROJECT_ROOT, clean))
+
+    try:
+        if os.path.commonpath([PROJECT_ROOT, resolved]) != PROJECT_ROOT:
+            raise ValueError
+    except ValueError:
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="invalid path")
+
     return resolved
 
 

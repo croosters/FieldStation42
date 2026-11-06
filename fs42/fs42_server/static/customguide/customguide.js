@@ -665,6 +665,21 @@ async function fetchCurrentMedia() {
   }
 }
 
+function updateLiveChannelBadge(info) {
+  const badge = document.getElementById('live-channel-indicator');
+  if (!badge) return;
+
+  if (!info || !info.channel_number) {
+    badge.hidden = true;
+    badge.textContent = '';
+    return;
+  }
+
+  const channelText = info.channel_number ? `LIVE ${info.channel_number}` : 'LIVE';
+  badge.textContent = channelText;
+  badge.hidden = false;
+}
+
 function playMirrorURL(url, info) {
   mirrorURL = url;
   mirrorInfo = info || null;
@@ -723,11 +738,15 @@ async function mirrorPoll() {
     } else {
       mirrorInfo = info;
     }
+    updateLiveChannelBadge(info);
   } else if (mirrorURL !== null) {
     // player went idle/off-air: next poll will hand back the fallback channel
     // from the server, so there is nothing to do here
     mirrorURL = null;
     mirrorInfo = null;
+    updateLiveChannelBadge(null);
+  } else {
+    updateLiveChannelBadge(null);
   }
 }
 
