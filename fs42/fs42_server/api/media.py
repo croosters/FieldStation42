@@ -5,6 +5,8 @@ from urllib.parse import unquote
 from fastapi import APIRouter, HTTPException, status
 from fastapi.responses import FileResponse
 
+from fs42.station_manager import StationManager
+
 router = APIRouter(prefix="/media", tags=["media"])
 logger = logging.getLogger("media_api")
 
@@ -21,6 +23,8 @@ def safe_resolve(relative_path):
     if not relative_path:
         raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="invalid path")
 
+    allow_symlinks = StationManager().server_conf.get("follow_static_symlinks", False)
+
     candidates = []
     raw = str(relative_path)
     decoded = unquote(raw)
@@ -33,10 +37,22 @@ def safe_resolve(relative_path):
     for candidate in candidates:
         clean = candidate.lstrip('/').lstrip('\\')
         if os.path.isabs(candidate):
-            resolved = os.path.realpath(candidate)
+            requested = os.path.abspath(candidate)
         else:
-            resolved = os.path.realpath(os.path.join(PROJECT_ROOT, clean))
+            requested = os.path.abspath(os.path.join(PROJECT_ROOT, clean))
 
+        try:
+            if os.path.commonpath([PROJECT_ROOT, requested]) != PROJECT_ROOT:
+                continue
+        except ValueError:
+            continue
+
+        if allow_symlinks:
+            if os.path.exists(requested):
+                return requested
+            continue
+
+        resolved = os.path.realpath(requested)
         try:
             if os.path.commonpath([PROJECT_ROOT, resolved]) == PROJECT_ROOT:
                 return resolved

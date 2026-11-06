@@ -70,8 +70,8 @@ When `end_hour` is less than `start_hour`, the period wraps around midnight. For
 
 ## Following Symlinks in Static Directories
 
-By default, the web server won't serve a symlink that points outside of the static directories.
-Enable `follow_static_symlinks` to keep themes or guide videos elsewhere on disk:
+By default, the web server won't serve a symlink that points outside of the static directories or media paths under the project tree.
+Enable `follow_static_symlinks` to keep themes, guide videos, and catalog/media symlinks elsewhere on disk:
 
 ```json
 {
