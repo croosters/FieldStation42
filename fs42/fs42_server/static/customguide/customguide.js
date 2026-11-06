@@ -680,9 +680,31 @@ function updateLiveChannelBadge(info) {
   badge.hidden = false;
 }
 
+function isBrowserPlayableMediaUrl(url) {
+  if (!url) return false;
+  try {
+    const parsed = new URL(url, window.location.origin);
+    const ext = parsed.pathname.split('?')[0].split('#')[0].match(/\.([a-z0-9]+)$/i);
+    const supported = new Set(['mp4', 'webm', 'ogg', 'm4v', 'mov']);
+    return !!(ext && supported.has(ext[1].toLowerCase()));
+  } catch (e) {
+    return false;
+  }
+}
+
 function playMirrorURL(url, info) {
   mirrorURL = url;
   mirrorInfo = info || null;
+
+  if (!isBrowserPlayableMediaUrl(url)) {
+    const videoPanel = document.getElementById('video-panel');
+    if (videoPanel) videoPanel.style.display = 'none';
+    updateLiveChannelBadge(info);
+    return;
+  }
+
+  const videoPanel = document.getElementById('video-panel');
+  if (videoPanel) videoPanel.style.display = '';
   bgVideoPlayer.src = url;
 
   const startAt = info && info.elapsed_seconds;
@@ -726,7 +748,7 @@ function playVideoTrack(index) {
 // Re-check what the player is doing. If it changed (channel switch, new file,
 // went off-air, came back on), swap the video panel source accordingly.
 async function mirrorPoll() {
-  if (!MIRROR_LIVE || !bgVideoPlayer) return;
+  if (!MIRROR_LIVE) return;
 
   const info = await fetchCurrentMedia();
   const onAir = info && info.url;
@@ -763,6 +785,11 @@ function setupVideo() {
 
   const vol = parseFloat(getCSSVar('--video-volume'));
   bgVideoPlayer.volume = isNaN(vol) ? 0.8 : vol;
+
+  const videoPanel = document.getElementById('video-panel');
+  if (videoPanel && !MIRROR_LIVE) {
+    videoPanel.style.display = '';
+  }
 
   let consecutiveErrors = 0;
 
