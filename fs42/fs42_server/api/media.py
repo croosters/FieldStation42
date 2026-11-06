@@ -21,17 +21,29 @@ def safe_resolve(relative_path):
     if not relative_path:
         raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="invalid path")
 
-    clean = unquote(relative_path).replace('\\', '/')
-    clean = clean.lstrip('/').lstrip('\\')
-    resolved = os.path.realpath(os.path.join(PROJECT_ROOT, clean))
+    candidates = []
+    raw = str(relative_path)
+    decoded = unquote(raw)
+    for candidate in {raw, decoded}:
+        if not candidate:
+            continue
+        candidate = candidate.replace('\\', '/')
+        candidates.append(candidate)
 
-    try:
-        if os.path.commonpath([PROJECT_ROOT, resolved]) != PROJECT_ROOT:
-            raise ValueError
-    except ValueError:
-        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="invalid path")
+    for candidate in candidates:
+        clean = candidate.lstrip('/').lstrip('\\')
+        if os.path.isabs(candidate):
+            resolved = os.path.realpath(candidate)
+        else:
+            resolved = os.path.realpath(os.path.join(PROJECT_ROOT, clean))
 
-    return resolved
+        try:
+            if os.path.commonpath([PROJECT_ROOT, resolved]) == PROJECT_ROOT:
+                return resolved
+        except ValueError:
+            pass
+
+    raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="invalid path")
 
 
 @router.get("/list")
