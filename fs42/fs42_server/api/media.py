@@ -41,15 +41,21 @@ def safe_resolve(relative_path):
         else:
             requested = os.path.abspath(os.path.join(PROJECT_ROOT, clean))
 
+        if allow_symlinks:
+            if os.path.exists(requested):
+                return requested
+            # Some symlinked media trees live completely outside the repo root.
+            # Allow those when the symlink target is a real file and the operator
+            # explicitly enabled follow_static_symlinks.
+            resolved = os.path.realpath(requested)
+            if os.path.exists(resolved):
+                return resolved
+            continue
+
         try:
             if os.path.commonpath([PROJECT_ROOT, requested]) != PROJECT_ROOT:
                 continue
         except ValueError:
-            continue
-
-        if allow_symlinks:
-            if os.path.exists(requested):
-                return requested
             continue
 
         resolved = os.path.realpath(requested)
